@@ -35,7 +35,11 @@ class SkillDataLoader:
             
             resp = requests.get(url, headers=self.headers)
             if resp.status_code != 200:
-                break
+                try:
+                    err = resp.json()
+                except Exception:
+                    err = resp.text
+                raise ValueError(f"GitHub API error {resp.status_code}: {err}")
             
             data = resp.json().get("items", [])
             if not data:
@@ -232,11 +236,13 @@ class SkillDataLoader:
     
     def load_all(self):
         """Main entry: fetch GitHub + Stack Overflow users and build feature matrix"""
+        if not self.token:
+            raise ValueError("Missing GITHUB_API. Set it in Streamlit secrets or .env.")
         print(f"Fetching {self.n_users} users from multiple sources (GitHub + Stack Overflow)...")
         users = self.fetch_users()
         
         if not users:
-            raise ValueError("No users found. Check GITHUB_API in Streamlit secrets or .env, and rate limits.")
+            raise ValueError("No users found. Check GITHUB_API, rate limits, or search query filters.")
         
         print(f"✓ Fetched {len(users)} users\nBuilding multi-platform feature matrix...")
         df = self.build_features(users)
