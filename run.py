@@ -303,6 +303,7 @@ def main():
             fig, ax = plt.subplots(figsize=(10, 6))
             
             gap_values = [float(gaps[i]['gap']) for i in range(sg.n_clusters)]
+            gap_values = np.nan_to_num(gap_values, nan=0.0, posinf=0.0, neginf=0.0)
             labels = [archetypes[i] for i in range(sg.n_clusters)]
             colors_gap = ['red' if g < -0.05 else 'green' if g > 0.05 else 'gray' for g in gap_values]
             y_pos = np.arange(len(labels))
