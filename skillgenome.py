@@ -221,3 +221,18 @@ class SkillGenome: #Orchestrator for the entire skill analysis pipeline
         simulated_dist = simulated_dist / simulated_dist.sum()
         
         return current_dist, simulated_dist
+
+    def forecast_trends(self, months=12, volatility=0.02, seed=42):
+        """Project skill distribution over time using small stochastic drift"""
+        rng = np.random.default_rng(seed)
+        current_dist = np.bincount(self.clusters, minlength=self.n_clusters) / len(self.clusters)
+        timeline = []
+
+        dist = current_dist.copy()
+        for _ in range(months):
+            drift = rng.normal(0, volatility, size=self.n_clusters)
+            dist = np.clip(dist + drift, 0, None)
+            dist = dist / dist.sum()
+            timeline.append(dist.copy())
+
+        return current_dist, np.array(timeline)

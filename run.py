@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -35,6 +36,39 @@ def build_region_insights(regional, archetypes):
             f"It shows a {diversity_note} (diversity={diversity:.2f}) and an overall skill level of {skill_level:.2f}."
         )
     return insights
+
+
+def build_risk_zones(regional, n_clusters, required_dist=None, shortage_threshold=0.05):
+    if required_dist is None:
+        required_dist = {i: 1 / n_clusters for i in range(n_clusters)}
+    risk_rows = []
+    for region, info in regional.items():
+        total = info['population']
+        if total == 0:
+            continue
+        region_dist = info['top_clusters'] / total
+        deficits = []
+        for i in range(n_clusters):
+            gap = required_dist.get(i, 0) - region_dist[i]
+            if gap > shortage_threshold:
+                deficits.append(gap)
+        risk_score = float(sum(deficits))
+        if risk_score >= 0.25:
+            risk_level = "High"
+        elif risk_score >= 0.12:
+            risk_level = "Medium"
+        elif risk_score > 0:
+            risk_level = "Low"
+        else:
+            risk_level = "Stable"
+        risk_rows.append({
+            "region": region,
+            "risk_level": risk_level,
+            "risk_score": risk_score,
+            "deficit_clusters": len(deficits)
+        })
+    risk_rows.sort(key=lambda x: x["risk_score"], reverse=True)
+    return risk_rows
 
 def main():
     st.set_page_config(page_title="SkillGenome X", page_icon="", layout="wide")
@@ -120,12 +154,20 @@ def main():
         regional = sg.regional_analysis(clean_data)
         gaps = sg.detect_gaps()
         embeddings_2d = sg.reduce_2d()
+        current_dist, timeline = sg.forecast_trends(months=12)
     st.success("✓ Analysis complete")
     
     st.markdown("---")
     
     # Display results in tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Skill Archetypes", "Regional Analysis", "Skill Gaps", "Policy Simulation", "Data Export"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Skill Archetypes",
+        "Regional Analysis",
+        "Skill Gaps",
+        "Skill Evolution",
+        "Policy Simulation",
+        "Data Export"
+    ])
     
     # Tab 1: Skill Archetypes
     with tab1:
@@ -155,8 +197,8 @@ def main():
                                edgecolors='black', linewidth=2, zorder=10)
             
             axes[0].set_title('Skill Genome Map', fontsize=12, fontweight='bold')
-            axes[0].set_xlabel('Skill Dimension 1')
-            axes[0].set_ylabel('Skill Dimension 2')
+            axes[0].set_xlabel('Technical Depth')
+            axes[0].set_ylabel('Skill Breadth')
             axes[0].legend(fontsize=8, loc='best')
             axes[0].grid(alpha=0.3)
             
@@ -218,6 +260,26 @@ def main():
                 st.write(f"- {insight}")
         else:
             st.info("No regional insights available for the current selection.")
+
+        st.markdown("---")
+        st.subheader("Structural Risk Zones")
+        risk_rows = build_risk_zones(regional, sg.n_clusters)
+        if risk_rows:
+            risk_df = pd.DataFrame(risk_rows)
+            st.dataframe(risk_df, use_container_width=True)
+            for row in risk_rows:
+                label = f"{row['region']}: {row['risk_level']} risk"
+                detail = f"Risk score {row['risk_score']:.2f}, deficits {row['deficit_clusters']} clusters"
+                if row['risk_level'] == "High":
+                    st.error(f"{label} - {detail}")
+                elif row['risk_level'] == "Medium":
+                    st.warning(f"{label} - {detail}")
+                elif row['risk_level'] == "Low":
+                    st.info(f"{label} - {detail}")
+                else:
+                    st.success(f"{label} - {detail}")
+        else:
+            st.info("No risk zones detected for the current selection.")
     
     # Tab 3: Skill Gaps
     with tab3:
@@ -240,11 +302,15 @@ def main():
         with col2:
             fig, ax = plt.subplots(figsize=(10, 6))
             
-            gap_values = [gaps[i]['gap'] for i in range(sg.n_clusters)]
+            gap_values = [float(gaps[i]['gap']) for i in range(sg.n_clusters)]
             labels = [archetypes[i] for i in range(sg.n_clusters)]
             colors_gap = ['red' if g < -0.05 else 'green' if g > 0.05 else 'gray' for g in gap_values]
+            y_pos = np.arange(len(labels))
             
-            ax.barh(labels, gap_values, color=colors_gap, alpha=0.7, edgecolor='black')
+            ax.barh(y_pos, gap_values, color=colors_gap, alpha=0.7, edgecolor='black')
+            ax.scatter(gap_values, y_pos, color='black', s=15, zorder=3)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(labels)
             ax.axvline(0, color='black', linewidth=1)
             ax.axvline(-0.05, color='red', linestyle='--', alpha=0.5, label='Surplus threshold')
             ax.axvline(0.05, color='green', linestyle='--', alpha=0.5, label='Shortage threshold')
@@ -255,9 +321,58 @@ def main():
             
             plt.tight_layout()
             st.pyplot(fig)
+
+        st.markdown("---")
+        st.subheader("Emerging vs Declining Skills")
+        delta = timeline[-1] - current_dist
+        trend_rows = []
+        for i in range(sg.n_clusters):
+            change = float(delta[i])
+            if change > 0.01:
+                status = "Emerging"
+            elif change < -0.01:
+                status = "Declining"
+            else:
+                status = "Stable"
+            trend_rows.append({
+                "skill": archetypes[i],
+                "current_pct": round(current_dist[i] * 100, 2),
+                "projected_pct": round(timeline[-1][i] * 100, 2),
+                "delta_pct": round(change * 100, 2),
+                "trend": status
+            })
+        trend_df = pd.DataFrame(trend_rows)
+        st.dataframe(trend_df, use_container_width=True)
     
-    # Tab 4: Policy Simulation
+    # Tab 4: Skill Evolution
     with tab4:
+        st.header("Skill Evolution Timeline")
+        st.markdown("Projected skill distribution over the next 12 months")
+
+        months = np.arange(1, timeline.shape[0] + 1)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for i in range(sg.n_clusters):
+            ax.plot(months, timeline[:, i] * 100, label=archetypes[i])
+
+        ax.set_xlabel("Months")
+        ax.set_ylabel("Population (%)")
+        ax.set_title("Skill Distribution Forecast", fontsize=12, fontweight='bold')
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8, loc='best')
+        plt.tight_layout()
+        st.pyplot(fig)
+
+        st.markdown("---")
+        st.subheader("Current Distribution Baseline")
+        baseline_df = pd.DataFrame({
+            "Skill Cluster": [archetypes[i] for i in range(sg.n_clusters)],
+            "Current Share (%)": (current_dist * 100).round(2)
+        })
+        st.dataframe(baseline_df, use_container_width=True)
+
+    # Tab 5: Policy Simulation
+    with tab5:
         st.header("🎯 Policy Simulation: What-If Analysis")
         st.markdown("Model interventions and see projected impact on national skill distribution")
         
@@ -353,8 +468,8 @@ def main():
             else:
                 st.info("👈 Configure intervention parameters and click 'Run Simulation' to see projected outcomes")
     
-    # Tab 5: Data Export
-    with tab5:
+    # Tab 6: Data Export
+    with tab6:
         st.header("Export Results")
         
         results = clean_data.copy()
@@ -390,6 +505,39 @@ def main():
             data=csv_full,
             file_name="full_dataset_adversarial.csv",
             mime="text/csv"
+        )
+
+        st.markdown("---")
+        st.subheader("📦 Skill Genome JSON Export")
+        genome_payload = {
+            "meta": {
+                "n_users": int(len(clean_data)),
+                "n_clusters": int(sg.n_clusters),
+                "features": features,
+                "timestamp": pd.Timestamp.utcnow().isoformat()
+            },
+            "archetypes": {str(k): v for k, v in archetypes.items()},
+            "distribution": {
+                "current": (current_dist * 100).round(4).tolist(),
+                "projected_12m": (timeline[-1] * 100).round(4).tolist()
+            },
+            "gaps": gaps,
+            "regional": regional,
+            "emerging_declining": trend_df.to_dict(orient="records")
+        }
+        def _json_default(obj):
+            if isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return str(obj)
+
+        genome_json = json.dumps(genome_payload, indent=2, default=_json_default)
+        st.download_button(
+            label="📥 Download Skill Genome (JSON)",
+            data=genome_json,
+            file_name="skill_genome.json",
+            mime="application/json"
         )
     
     st.markdown("---")
