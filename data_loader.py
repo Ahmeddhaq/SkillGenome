@@ -8,9 +8,18 @@ load_dotenv()
 
 class SkillDataLoader:
     def __init__(self, n_users=100):
-        self.token = os.getenv("GITHUB_API")
-        self.so_key = os.getenv("STACKOVERFLOW_KEY")
-        self.headers = {"Authorization": f"token {self.token}"}
+        secret_token = None
+        secret_so_key = None
+        try:
+            import streamlit as st
+            secret_token = st.secrets.get("GITHUB_API")
+            secret_so_key = st.secrets.get("STACKOVERFLOW_KEY")
+        except Exception:
+            pass
+
+        self.token = secret_token or os.getenv("GITHUB_API")
+        self.so_key = secret_so_key or os.getenv("STACKOVERFLOW_KEY")
+        self.headers = {"Authorization": f"token {self.token}"} if self.token else {}
         self.base_url = "https://api.github.com"
         self.so_base_url = "https://api.stackexchange.com/2.3"
         self.n_users = n_users
@@ -227,7 +236,7 @@ class SkillDataLoader:
         users = self.fetch_users()
         
         if not users:
-            raise ValueError("No users found. Check GITHUB_API token and rate limits.")
+            raise ValueError("No users found. Check GITHUB_API in Streamlit secrets or .env, and rate limits.")
         
         print(f"✓ Fetched {len(users)} users\nBuilding multi-platform feature matrix...")
         df = self.build_features(users)
