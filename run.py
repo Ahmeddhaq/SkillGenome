@@ -103,9 +103,21 @@ def main():
         loader = SkillDataLoader(
         n_users=n_people
         )
-        data = loader.load_all()
-    
-    st.success(f"✓ Loaded {len(data)} users from GitHub + Stack Overflow")
+        data_sources = loader.load_all()
+
+    st.success(
+        f"✓ Loaded {len(data_sources['github'])} GitHub users and "
+        f"{len(data_sources['stack_overflow'])} Stack Overflow users"
+    )
+
+    source_choice = st.radio(
+        "Choose data source for analysis",
+        ["GitHub", "Stack Overflow"],
+        horizontal=True
+    )
+    source_key = "github" if source_choice == "GitHub" else "stack_overflow"
+    data = data_sources[source_key]
+    st.info(f"Analyzing {source_choice} dataset (sources are kept separate).")
     
     # Adversarial Detection Summary
     suspicious_count = data['is_suspicious'].sum()

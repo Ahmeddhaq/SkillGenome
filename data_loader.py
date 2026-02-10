@@ -81,6 +81,41 @@ class SkillDataLoader:
         commits = len(repos) * 15
         
         return {"stars": stars, "languages": languages, "commits": commits}
+
+    def fetch_stackoverflow_users(self, location="India"):
+        """Fetch Stack Overflow users and filter by location"""
+        users = []
+        page = 1
+
+        while len(users) < self.n_users:
+            url = f"{self.so_base_url}/users"
+            params = {
+                "site": "stackoverflow",
+                "key": self.so_key,
+                "pagesize": 100,
+                "page": page,
+                "order": "desc",
+                "sort": "reputation"
+            }
+
+            resp = requests.get(url, params=params)
+            if resp.status_code != 200:
+                break
+
+            items = resp.json().get("items", [])
+            if not items:
+                break
+
+            for user in items:
+                if len(users) >= self.n_users:
+                    break
+                loc = (user.get("location") or "").lower()
+                if location.lower() in loc:
+                    users.append(user)
+
+            page += 1
+
+        return users[:self.n_users]
     
     def fetch_stackoverflow_data(self, username):
         """Fetch Stack Overflow data for a user"""
@@ -145,12 +180,11 @@ class SkillDataLoader:
         return "Central"
     
     def build_features(self, users):
-        """Convert GitHub + Stack Overflow data into skill features"""
+        """Convert GitHub data into skill features"""
         data = []
         
         for i, user in enumerate(users):
             repo_data = self.fetch_user_repos(user["login"])
-            so_data = self.fetch_stackoverflow_data(user["login"])
             
             features = {
                 "id": i,
@@ -162,10 +196,10 @@ class SkillDataLoader:
                 "commits": max(1, repo_data["commits"]),
                 "languages": len(repo_data["languages"]),
                 # Stack Overflow features
-                "so_reputation": max(1, so_data["reputation"]),
-                "so_answers": so_data["answers"],
-                "so_questions": so_data["questions"],
-                "so_badges": so_data["badges"],
+                "so_reputation": 0,
+                "so_answers": 0,
+                "so_questions": 0,
+                "so_badges": 0,
                 # Geographic
                 "region": self.get_region(user.get("location", "")),
                 "lat": np.random.uniform(8, 37),
@@ -178,6 +212,41 @@ class SkillDataLoader:
             if (i + 1) % 50 == 0:
                 print(f"  Fetched {i + 1}/{self.n_users} users...")
         
+        return pd.DataFrame(data)
+
+    def build_stackoverflow_features(self, users):
+        """Convert Stack Overflow data into skill features"""
+        data = []
+
+        for i, user in enumerate(users):
+            badges = user.get("badge_counts", {})
+            badge_score = badges.get("gold", 0) * 3 + badges.get("silver", 0) * 2 + badges.get("bronze", 0)
+            features = {
+                "id": i,
+                "username": user.get("display_name", f"so_user_{i}"),
+                # GitHub placeholders to keep schema stable
+                "followers": 1,
+                "public_repos": 1,
+                "stars": 1,
+                "commits": 1,
+                "languages": 0,
+                # Stack Overflow features
+                "so_reputation": max(1, user.get("reputation", 0)),
+                "so_answers": user.get("answer_count", 0),
+                "so_questions": user.get("question_count", 0),
+                "so_badges": badge_score,
+                # Geographic
+                "region": self.get_region(user.get("location", "")),
+                "lat": np.random.uniform(8, 37),
+                "lon": np.random.uniform(68, 97),
+                "urban": 1
+            }
+
+            data.append(features)
+
+            if (i + 1) % 50 == 0:
+                print(f"  Fetched {i + 1}/{self.n_users} Stack Overflow users...")
+
         return pd.DataFrame(data)
     
     def detect_adversarial(self, df):
@@ -235,20 +304,29 @@ class SkillDataLoader:
         return df
     
     def load_all(self):
-        """Main entry: fetch GitHub + Stack Overflow users and build feature matrix"""
+        """Main entry: fetch separate GitHub and Stack Overflow datasets"""
         if not self.token:
             raise ValueError("Missing GITHUB_API. Set it in Streamlit secrets or .env.")
-        print(f"Fetching {self.n_users} users from multiple sources (GitHub + Stack Overflow)...")
-        users = self.fetch_users()
-        
-        if not users:
-            raise ValueError("No users found. Check GITHUB_API, rate limits, or search query filters.")
-        
-        print(f"✓ Fetched {len(users)} users\nBuilding multi-platform feature matrix...")
-        df = self.build_features(users)
-        
-        # Apply adversarial detection
-        df = self.detect_adversarial(df)
-        
-        print(f"✓ Built {len(df)} profiles with {len(df.columns)} features from 2 platforms")
-        return df
+
+        print(f"Fetching {self.n_users} GitHub users...")
+        gh_users = self.fetch_users()
+        if not gh_users:
+            raise ValueError("No GitHub users found. Check GITHUB_API, rate limits, or search query filters.")
+
+        print(f"✓ Fetched {len(gh_users)} GitHub users\nBuilding GitHub feature matrix...")
+        gh_df = self.build_features(gh_users)
+        gh_df = self.detect_adversarial(gh_df)
+
+        print(f"Fetching {self.n_users} Stack Overflow users...")
+        so_users = self.fetch_stackoverflow_users()
+        if not so_users:
+            raise ValueError("No Stack Overflow users found. Check STACKOVERFLOW_KEY or search filters.")
+
+        print(f"✓ Fetched {len(so_users)} Stack Overflow users\nBuilding Stack Overflow feature matrix...")
+        so_df = self.build_stackoverflow_features(so_users)
+        so_df = self.detect_adversarial(so_df)
+
+        return {
+            "github": gh_df,
+            "stack_overflow": so_df
+        }
