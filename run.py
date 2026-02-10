@@ -565,7 +565,7 @@ def main():
     st.markdown("Readable summaries across regions and overall trends")
 
     region_insights = build_region_insights(regional, archetypes)
-    global_insights = build_global_insights(gaps, trend_df, source_choice)
+    global_insights = build_global_insights(gaps, trend_df, "combined")
 
     if region_insights:
         st.subheader("Regional Insights")
