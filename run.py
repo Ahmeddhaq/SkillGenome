@@ -130,14 +130,10 @@ def main():
         f"{len(data_sources['stack_overflow'])} Stack Overflow users"
     )
 
-    source_choice = st.radio(
-        "Choose data source for analysis",
-        ["GitHub", "Stack Overflow"],
-        horizontal=True
-    )
-    source_key = "github" if source_choice == "GitHub" else "stack_overflow"
-    data = data_sources[source_key]
-    st.info(f"Analyzing {source_choice} dataset (sources are kept separate).")
+    data_sources['github']['source'] = 'github'
+    data_sources['stack_overflow']['source'] = 'stack_overflow'
+    data = pd.concat([data_sources['github'], data_sources['stack_overflow']], ignore_index=True)
+    st.info("Training on combined multi-source dataset (no username matching).")
     
     # Adversarial Detection Summary
     suspicious_count = data['is_suspicious'].sum()
