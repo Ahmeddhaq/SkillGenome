@@ -70,6 +70,26 @@ def build_risk_zones(regional, n_clusters, required_dist=None, shortage_threshol
     risk_rows.sort(key=lambda x: x["risk_score"], reverse=True)
     return risk_rows
 
+
+def build_global_insights(gaps, trend_df, source_choice):
+    insights = []
+    shortage = [k for k, v in gaps.items() if v['status'] == 'shortage']
+    surplus = [k for k, v in gaps.items() if v['status'] == 'surplus']
+    if shortage:
+        insights.append(f"Detected {len(shortage)} skill shortages in the {source_choice} dataset.")
+    if surplus:
+        insights.append(f"Detected {len(surplus)} skill surpluses in the {source_choice} dataset.")
+
+    emerging = trend_df[trend_df['trend'] == 'Emerging']
+    declining = trend_df[trend_df['trend'] == 'Declining']
+    if not emerging.empty:
+        top = emerging.sort_values('delta_pct', ascending=False).iloc[0]
+        insights.append(f"Top emerging skill: {top['skill']} (+{top['delta_pct']}%).")
+    if not declining.empty:
+        top = declining.sort_values('delta_pct').iloc[0]
+        insights.append(f"Top declining skill: {top['skill']} ({top['delta_pct']}%).")
+    return insights
+
 def main():
     st.set_page_config(page_title="SkillGenome X", page_icon="", layout="wide")
     
@@ -263,15 +283,6 @@ def main():
             
             plt.tight_layout()
             st.pyplot(fig)
-
-        st.markdown("---")
-        st.subheader("Explainable Insights")
-        insights = build_region_insights(regional, archetypes)
-        if insights:
-            for insight in insights:
-                st.write(f"- {insight}")
-        else:
-            st.info("No regional insights available for the current selection.")
 
         st.markdown("---")
         st.subheader("Structural Risk Zones")
@@ -552,6 +563,27 @@ def main():
             file_name="skill_genome.json",
             mime="application/json"
         )
+
+    st.markdown("---")
+    st.header("Explainable Insights")
+    st.markdown("Readable summaries across regions and overall trends")
+
+    region_insights = build_region_insights(regional, archetypes)
+    global_insights = build_global_insights(gaps, trend_df, source_choice)
+
+    if region_insights:
+        st.subheader("Regional Insights")
+        for insight in region_insights:
+            st.write(f"- {insight}")
+    else:
+        st.info("No regional insights available for the current selection.")
+
+    if global_insights:
+        st.subheader("Global Insights")
+        for insight in global_insights:
+            st.write(f"- {insight}")
+    else:
+        st.info("No global insights available for the current selection.")
     
     st.markdown("---")
     st.success("✅ Analysis Complete!")
