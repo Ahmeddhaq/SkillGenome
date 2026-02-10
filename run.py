@@ -133,7 +133,7 @@ def main():
     data_sources['github']['source'] = 'github'
     data_sources['stack_overflow']['source'] = 'stack_overflow'
     data = pd.concat([data_sources['github'], data_sources['stack_overflow']], ignore_index=True)
-    st.info("Training on combined multi-source dataset (no username matching).")
+    st.info("Training on combined multi-source dataset.")
     
     # Adversarial Detection Summary
     suspicious_count = data['is_suspicious'].sum()
