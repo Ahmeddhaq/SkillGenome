@@ -103,7 +103,7 @@ class SkillDataLoader:
         return {"stars": stars, "languages": languages, "commits": commits}
 
     def fetch_stackoverflow_users(self, location="India"):
-        """Fetch Stack Overflow users and filter by location"""
+        """Fetch Stack Overflow users by reputation (SO API doesn't support location search)"""
         users = []
         page = 1
 
@@ -132,9 +132,7 @@ class SkillDataLoader:
             for user in items:
                 if len(users) >= self.n_users:
                     break
-                loc = (user.get("location") or "").lower()
-                if location.lower() in loc:
-                    users.append(user)
+                users.append(user)
 
             page += 1
 

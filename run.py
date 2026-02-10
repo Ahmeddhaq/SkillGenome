@@ -139,14 +139,45 @@ def main():
 
     # Only run analysis if not already computed
     if "analysis_data" not in st.session_state:
-        @st.cache_data(ttl=refresh_seconds)
-        def cached_load_all(n_users):
+        base_cache_size = min(50, n_people)
+        extra_size = max(0, n_people - base_cache_size)
+
+        def load_fresh(n_users):
             loader = SkillDataLoader(n_users=n_users)
             return loader.load_all()
 
-        # 1. Load data
+        # 1. Load data (reuse 50 cached, fetch the rest fresh)
         with st.spinner("Loading skill signals from multiple platforms..."):
-            data_sources = cached_load_all(n_people)
+            base_sources = st.session_state.get("base_sources")
+            base_size = st.session_state.get("base_cache_size")
+
+            if base_sources is None or base_size != base_cache_size:
+                # First run or cache size changed: fetch once and seed the cache
+                full_sources = load_fresh(n_people)
+                base_sources = {
+                    "github": full_sources["github"].head(base_cache_size).copy(),
+                    "stack_overflow": full_sources["stack_overflow"].head(base_cache_size).copy()
+                }
+                st.session_state.base_sources = base_sources
+                st.session_state.base_cache_size = base_cache_size
+
+                if extra_size > 0:
+                    data_sources = {
+                        "github": full_sources["github"],
+                        "stack_overflow": full_sources["stack_overflow"]
+                    }
+                else:
+                    data_sources = base_sources
+            else:
+                # Reuse cached base and fetch only the extra
+                if extra_size > 0:
+                    extra_sources = load_fresh(extra_size)
+                    data_sources = {
+                        "github": pd.concat([base_sources["github"], extra_sources["github"]], ignore_index=True),
+                        "stack_overflow": pd.concat([base_sources["stack_overflow"], extra_sources["stack_overflow"]], ignore_index=True)
+                    }
+                else:
+                    data_sources = base_sources
 
         st.success(
             f"✓ Loaded {len(data_sources['github'])} GitHub users and "
@@ -220,7 +251,8 @@ def main():
             "embeddings_2d": embeddings_2d,
             "current_dist": current_dist,
             "timeline": timeline,
-            "embeddings": embeddings
+            "embeddings": embeddings,
+            "features": features
         }
     else:
         # Retrieve from session state (no recomputation)
@@ -236,6 +268,7 @@ def main():
         current_dist = analysis["current_dist"]
         timeline = analysis["timeline"]
         embeddings = analysis["embeddings"]
+        features = analysis["features"]
     
     # Calculate metrics (needed for both paths)
     suspicious_count = data['is_suspicious'].sum()
@@ -275,36 +308,9 @@ def main():
             suspicious_df = data[data['is_suspicious']][['username', 'trust_score', 'suspicious_flags', 'followers', 'stars', 'so_reputation']]
             st.dataframe(suspicious_df, use_container_width=True)
 
-    # Skill Distribution Breakdown
-    st.subheader("📊 National Skill Distribution")
-    cluster_counts = pd.Series(clusters).value_counts().sort_index()
-    dist_df = pd.DataFrame({
-        'Skill Cluster': [archetypes[i] for i in cluster_counts.index],
-        'Population': cluster_counts.values,
-        'Percentage': (cluster_counts.values / len(clusters) * 100).round(2)
-    })
-    st.dataframe(dist_df, use_container_width=True, hide_index=True)
-
-    # Regional Rankings
-    st.subheader("🏆 Regional Rankings")
-    rank_col1, rank_col2 = st.columns(2)
-    
-    with rank_col1:
-        st.markdown("**Top 5 Regions by Population**")
-        pop_ranking = sorted([(r, int(v['population'])) for r, v in regional.items() if v['population'] > 0], 
-                            key=lambda x: x[1], reverse=True)[:5]
-        for idx, (region, pop) in enumerate(pop_ranking, 1):
-            st.write(f"{idx}. **{region}**: {pop:,} profiles")
-    
-    with rank_col2:
-        st.markdown("**Top 5 Most Diverse Regions**")
-        div_ranking = sorted([(r, v['diversity']) for r, v in regional.items() if v['population'] > 0], 
-                            key=lambda x: x[1], reverse=True)[:5]
-        for idx, (region, div) in enumerate(div_ranking, 1):
-            st.write(f"{idx}. **{region}**: {div:.3f} diversity score")
-
     # Skill Gap Severity Analysis
-    st.subheader("⚡ Skill Gap Severity Breakdown")
+    st.subheader("Skill Gap Severity")
+    cluster_counts = pd.Series(clusters).value_counts().sort_index()
     gap_shortage = [v for v in gaps.values() if v['status'] == 'shortage']
     gap_surplus = [v for v in gaps.values() if v['status'] == 'surplus']
     gap_balanced = [v for v in gaps.values() if v['status'] == 'balanced']
@@ -318,31 +324,9 @@ def main():
     with gap_col3:
         st.metric("Balanced Skills", len(gap_balanced))
 
-    # Growth Trends Summary
-    st.subheader("📈 Skill Evolution Insights")
-    growth_rates = []
-    for i in range(len(current_dist)):
-        current = current_dist[i]
-        future = timeline[-1][i]  # 12 months ahead
-        growth = ((future - current) / current * 100) if current > 0 else 0
-        growth_rates.append((archetypes[i], growth))
-    
-    growth_rates.sort(key=lambda x: x[1], reverse=True)
-    trend_col1, trend_col2 = st.columns(2)
-    
-    with trend_col1:
-        st.markdown("**🚀 Fastest Growing Skills** (Next 12 months)")
-        for skill, rate in growth_rates[:3]:
-            st.write(f"• **{skill}**: +{rate:.1f}% projected growth")
-    
-    with trend_col2:
-        st.markdown("**📉 Declining Skills** (Next 12 months)")
-        for skill, rate in growth_rates[-3:]:
-            st.write(f"• **{skill}**: {rate:.1f}% projected change")
-
     # Regional Focus Section
     st.markdown("---")
-    st.subheader("🎯 Regional Deep Dive")
+    st.subheader("Regional Deep Dive")
     region_names = sorted(list(regional.keys()))
     focus_region = st.selectbox("Focus Region", region_names)
     region_info = regional[focus_region]
@@ -355,33 +339,6 @@ def main():
         st.metric("Region Diversity", f"{region_info['diversity']:.2f}")
     with rcol3:
         st.metric("Region Dominant Skill", archetypes[region_top])
-    
-    # Regional Skill Breakdown
-    if region_info['population'] > 0:
-        st.markdown(f"**Skill Composition in {focus_region}:**")
-        region_dist = region_info['top_clusters'] / region_info['population'] * 100
-        region_breakdown = pd.DataFrame({
-            'Skill': [archetypes[i] for i in range(len(region_dist))],
-            'Count': [int(c) for c in region_info['top_clusters']],
-            'Percentage': region_dist.round(2)
-        }).sort_values('Percentage', ascending=False)
-        st.dataframe(region_breakdown, use_container_width=True, hide_index=True)
-    
-    # Regional Comparison with National Average
-    st.markdown(f"**{focus_region} vs. National Average:**")
-    comp_data = []
-    for i in range(len(archetypes)):
-        national_pct = (cluster_counts[i] / len(clusters) * 100) if i in cluster_counts.index else 0
-        regional_pct = (region_info['top_clusters'][i] / region_info['population'] * 100) if region_info['population'] > 0 else 0
-        diff = regional_pct - national_pct
-        comp_data.append({
-            'Skill': archetypes[i],
-            'National %': f"{national_pct:.2f}%",
-            'Regional %': f"{regional_pct:.2f}%",
-            'Difference': f"{diff:+.2f}%"
-        })
-    comp_df = pd.DataFrame(comp_data)
-    st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     
@@ -398,6 +355,17 @@ def main():
     # Tab 1: Skill Archetypes
     with tab1:
         st.header("Skill Archetypes Distribution")
+        
+        # National Skill Distribution Table
+        st.subheader("National Skill Distribution")
+        dist_df = pd.DataFrame({
+            'Skill Cluster': [archetypes[i] for i in cluster_counts.index],
+            'Population': cluster_counts.values,
+            'Percentage': (cluster_counts.values / len(clusters) * 100).round(2)
+        })
+        st.dataframe(dist_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
         
         col1, col2 = st.columns([1, 2])
         
@@ -445,6 +413,26 @@ def main():
     # Tab 2: Regional Analysis
     with tab2:
         st.header("Regional Skill Distribution")
+        
+        # Regional Rankings
+        st.subheader("Regional Rankings")
+        rank_col1, rank_col2 = st.columns(2)
+        
+        with rank_col1:
+            st.markdown("**Top 5 Regions by Population**")
+            pop_ranking = sorted([(r, int(v['population'])) for r, v in regional.items() if v['population'] > 0], 
+                                key=lambda x: x[1], reverse=True)[:5]
+            for idx, (region, pop) in enumerate(pop_ranking, 1):
+                st.write(f"{idx}. **{region}**: {pop:,} profiles")
+        
+        with rank_col2:
+            st.markdown("**Top 5 Most Diverse Regions**")
+            div_ranking = sorted([(r, v['diversity']) for r, v in regional.items() if v['population'] > 0], 
+                                key=lambda x: x[1], reverse=True)[:5]
+            for idx, (region, div) in enumerate(div_ranking, 1):
+                st.write(f"{idx}. **{region}**: {div:.3f} diversity score")
+        
+        st.markdown("---")
         
         col1, col2 = st.columns([1, 2])
         
@@ -546,6 +534,30 @@ def main():
     with tab4:
         st.header("Skill Evolution Timeline")
         st.markdown("Projected skill distribution over the next 12 months")
+
+        # Growth Trends Summary
+        st.subheader("Skill Evolution Insights")
+        growth_rates = []
+        for i in range(len(current_dist)):
+            current = current_dist[i]
+            future = timeline[-1][i]  # 12 months ahead
+            growth = ((future - current) / current * 100) if current > 0 else 0
+            growth_rates.append((archetypes[i], growth))
+        
+        growth_rates.sort(key=lambda x: x[1], reverse=True)
+        trend_col1, trend_col2 = st.columns(2)
+        
+        with trend_col1:
+            st.markdown("**Fastest Growing Skills** (Next 12 months)")
+            for skill, rate in growth_rates[:3]:
+                st.write(f"• **{skill}**: +{rate:.1f}% projected growth")
+        
+        with trend_col2:
+            st.markdown("**Declining Skills** (Next 12 months)")
+            for skill, rate in growth_rates[-3:]:
+                st.write(f"• **{skill}**: {rate:.1f}% projected change")
+        
+        st.markdown("---")
 
         months = np.arange(1, timeline.shape[0] + 1)
 
