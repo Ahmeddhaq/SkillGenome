@@ -1,5 +1,7 @@
 import os
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -23,6 +25,16 @@ class SkillDataLoader:
         self.base_url = "https://api.github.com"
         self.so_base_url = "https://api.stackexchange.com/2.3"
         self.n_users = n_users
+        self.session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
     
     def fetch_users(self, location="India"):
         """Fetch GitHub users from specified location"""
@@ -33,7 +45,10 @@ class SkillDataLoader:
             query = f"location:{location} followers:>10 type:user"
             url = f"{self.base_url}/search/users?q={query}&per_page=100&page={page}"
             
-            resp = requests.get(url, headers=self.headers)
+            try:
+                resp = self.session.get(url, headers=self.headers, timeout=10)
+            except requests.exceptions.RequestException:
+                break
             if resp.status_code != 200:
                 try:
                     err = resp.json()
@@ -51,17 +66,19 @@ class SkillDataLoader:
                 
                 # Fetch full user details to get followers and location
                 user_detail_url = f"{self.base_url}/users/{user['login']}"
-                detail_resp = requests.get(user_detail_url, headers=self.headers)
-                
-                if detail_resp.status_code == 200:
-                    user_data = detail_resp.json()
-                    users.append({
-                        "login": user_data["login"],
-                        "followers": user_data.get("followers", 0),
-                        "public_repos": user_data.get("public_repos", 0),
-                        "avatar_url": user_data.get("avatar_url", ""),
-                        "location": user_data.get("location", "")
-                    })
+                try:
+                    detail_resp = self.session.get(user_detail_url, headers=self.headers, timeout=10)
+                    if detail_resp.status_code == 200:
+                        user_data = detail_resp.json()
+                        users.append({
+                            "login": user_data["login"],
+                            "followers": user_data.get("followers", 0),
+                            "public_repos": user_data.get("public_repos", 0),
+                            "avatar_url": user_data.get("avatar_url", ""),
+                            "location": user_data.get("location", "")
+                        })
+                except requests.exceptions.RequestException:
+                    continue
             
             page += 1
         
@@ -70,7 +87,10 @@ class SkillDataLoader:
     def fetch_user_repos(self, username):
         """Fetch user's repositories and calculate metrics"""
         url = f"{self.base_url}/users/{username}/repos?per_page=100"
-        resp = requests.get(url, headers=self.headers)
+        try:
+            resp = self.session.get(url, headers=self.headers, timeout=10)
+        except requests.exceptions.RequestException:
+            return {"stars": 0, "languages": [], "commits": 0}
         
         if resp.status_code != 200:
             return {"stars": 0, "languages": [], "commits": 0}
@@ -98,7 +118,10 @@ class SkillDataLoader:
                 "sort": "reputation"
             }
 
-            resp = requests.get(url, params=params)
+            try:
+                resp = self.session.get(url, params=params, timeout=10)
+            except requests.exceptions.RequestException:
+                break
             if resp.status_code != 200:
                 break
 

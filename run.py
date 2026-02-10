@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from data_loader import SkillDataLoader
 from skillgenome import SkillGenome
 
@@ -109,82 +110,279 @@ def main():
         n_people = st.slider("Number of Individuals", 100, 1000, 500, 50)
         n_clusters = st.slider("Number of Skill Clusters", 4, 12, 8)
         epochs = st.slider("Training Epochs", 20, 100, 50, 10)
+
+        auto_refresh = st.checkbox("Auto-refresh dashboard", value=False)
+        refresh_seconds = st.slider("Refresh interval (sec)", 60, 900, 300, 30)
         
         run_btn = st.button("Run Analysis", type="primary")
+        refresh_btn = st.button("Refresh data now")
         
     
-    if not run_btn:
+    if "analysis_ready" not in st.session_state:
+        st.session_state.analysis_ready = False
+
+    if not run_btn and not st.session_state.analysis_ready:
         st.info("👈 Configure parameters in the sidebar and click 'Run Analysis' to start")
         return
     
-    # 1. Load data
-    with st.spinner("Loading skill signals from multiple platforms..."):
-        cache_path = f"data/github_cache_{n_people}.csv" if use_real and use_cache else None
-        loader = SkillDataLoader(
-        n_users=n_people
+    if auto_refresh:
+        st_autorefresh(interval=refresh_seconds * 1000, key="auto_refresh")
+
+    if refresh_btn:
+        st.cache_data.clear()
+        st.session_state.analysis_ready = False
+        st.session_state.pop("analysis_data", None)
+
+    # Mark analysis as ready
+    if run_btn:
+        st.session_state.analysis_ready = True
+
+    # Only run analysis if not already computed
+    if "analysis_data" not in st.session_state:
+        @st.cache_data(ttl=refresh_seconds)
+        def cached_load_all(n_users):
+            loader = SkillDataLoader(n_users=n_users)
+            return loader.load_all()
+
+        # 1. Load data
+        with st.spinner("Loading skill signals from multiple platforms..."):
+            data_sources = cached_load_all(n_people)
+
+        st.success(
+            f"✓ Loaded {len(data_sources['github'])} GitHub users and "
+            f"{len(data_sources['stack_overflow'])} Stack Overflow users"
         )
-        data_sources = loader.load_all()
 
-    st.success(
-        f"✓ Loaded {len(data_sources['github'])} GitHub users and "
-        f"{len(data_sources['stack_overflow'])} Stack Overflow users"
-    )
-
-    data_sources['github']['source'] = 'github'
-    data_sources['stack_overflow']['source'] = 'stack_overflow'
-    data = pd.concat([data_sources['github'], data_sources['stack_overflow']], ignore_index=True)
-    st.info("Training on combined multi-source dataset.")
+        data_sources['github']['source'] = 'github'
+        data_sources['stack_overflow']['source'] = 'stack_overflow'
+        data = pd.concat([data_sources['github'], data_sources['stack_overflow']], ignore_index=True)
+        st.info("Training on combined multi-source dataset.")
+        
+        # Adversarial Detection Summary
+        suspicious_count = data['is_suspicious'].sum()
+        clean_count = len(data) - suspicious_count
+        avg_trust = data['trust_score'].mean()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("✅ Clean Profiles", clean_count, delta=f"{clean_count/len(data)*100:.1f}%")
+        with col2:
+            st.metric("⚠️ Suspicious Profiles", suspicious_count, delta=f"{suspicious_count/len(data)*100:.1f}%", delta_color="inverse")
+        with col3:
+            st.metric("🛡️ Avg Trust Score", f"{avg_trust:.1f}/100")
+        
+        if suspicious_count > 0:
+            with st.expander(f"🔍 View {suspicious_count} Suspicious Profiles"):
+                suspicious_df = data[data['is_suspicious']][['username', 'trust_score', 'suspicious_flags', 'followers', 'stars', 'so_reputation']]
+                st.dataframe(suspicious_df, use_container_width=True)
+        
+        # 2. Preprocess
+        with st.spinner("Preprocessing data..."):
+            # Filter suspicious profiles for clean training
+            clean_data = data[~data['is_suspicious']].copy()
+            if len(clean_data) < len(data):
+                st.info(f"🧹 Filtered {len(data) - len(clean_data)} suspicious profiles for model training")
+            
+            sg = SkillGenome(latent_dim=32, n_clusters=n_clusters)
+            X, features = sg.preprocess(clean_data)
+        st.success(f"✓ Prepared {len(features)} features from {len(clean_data)} clean profiles")
+        
+        # 3. Train model
+        with st.spinner(f"Training latent skill encoder for {epochs} epochs..."):
+            progress_bar = st.progress(0)
+            sg.train_model(X, epochs=epochs)
+            progress_bar.progress(100)
+        st.success("✓ Training complete")
+        
+        # 4. Get embeddings
+        with st.spinner("Generating skill embeddings..."):
+            embeddings = sg.get_embeddings(X)
+        st.success(f"✓ Generated {embeddings.shape[0]} x {embeddings.shape[1]} embeddings")
+        
+        # 5. Analyze
+        with st.spinner("Analyzing clusters and patterns..."):
+            clusters, archetypes = sg.cluster_skills()
+            regional = sg.regional_analysis(clean_data)
+            gaps = sg.detect_gaps()
+            embeddings_2d = sg.reduce_2d()
+            current_dist, timeline = sg.forecast_trends(months=12)
+        st.success("✓ Analysis complete")
+        
+        # Store in session state
+        st.session_state.analysis_data = {
+            "data": data,
+            "clean_data": clean_data,
+            "sg": sg,
+            "clusters": clusters,
+            "archetypes": archetypes,
+            "regional": regional,
+            "gaps": gaps,
+            "embeddings_2d": embeddings_2d,
+            "current_dist": current_dist,
+            "timeline": timeline,
+            "embeddings": embeddings
+        }
+    else:
+        # Retrieve from session state (no recomputation)
+        analysis = st.session_state.analysis_data
+        data = analysis["data"]
+        clean_data = analysis["clean_data"]
+        sg = analysis["sg"]
+        clusters = analysis["clusters"]
+        archetypes = analysis["archetypes"]
+        regional = analysis["regional"]
+        gaps = analysis["gaps"]
+        embeddings_2d = analysis["embeddings_2d"]
+        current_dist = analysis["current_dist"]
+        timeline = analysis["timeline"]
+        embeddings = analysis["embeddings"]
     
-    # Adversarial Detection Summary
+    # Calculate metrics (needed for both paths)
     suspicious_count = data['is_suspicious'].sum()
     clean_count = len(data) - suspicious_count
     avg_trust = data['trust_score'].mean()
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("✅ Clean Profiles", clean_count, delta=f"{clean_count/len(data)*100:.1f}%")
-    with col2:
-        st.metric("⚠️ Suspicious Profiles", suspicious_count, delta=f"{suspicious_count/len(data)*100:.1f}%", delta_color="inverse")
-    with col3:
-        st.metric("🛡️ Avg Trust Score", f"{avg_trust:.1f}/100")
-    
+    st.markdown("---")
+    st.header("Consolidated Dashboard")
+    st.markdown("Snapshot of national skill signals and a focused regional view")
+
+    top_cluster = np.bincount(clusters).argmax()
+    shortage_count = sum(1 for v in gaps.values() if v['status'] == 'shortage')
+
+    dcol1, dcol2, dcol3, dcol4 = st.columns(4)
+    with dcol1:
+        st.metric("Total Profiles", f"{len(data):,}")
+    with dcol2:
+        st.metric("Clean Profiles", f"{clean_count:,}")
+    with dcol3:
+        st.metric("Skill Shortages", shortage_count)
+    with dcol4:
+        st.metric("Dominant Skill", archetypes[top_cluster])
+
+    # Suspicious Profiles Section in Dashboard
     if suspicious_count > 0:
+        st.subheader("⚠️ Adversarial Detection Summary")
+        sus_col1, sus_col2, sus_col3 = st.columns(3)
+        with sus_col1:
+            st.metric("Suspicious Profiles", suspicious_count, delta=f"{suspicious_count/len(data)*100:.1f}%", delta_color="inverse")
+        with sus_col2:
+            st.metric("Avg Trust Score", f"{avg_trust:.1f}/100")
+        with sus_col3:
+            flagged_profiles = data[data['is_suspicious']]['suspicious_flags'].apply(lambda x: len(x) if isinstance(x, list) else 0).sum()
+            st.metric("Total Red Flags", int(flagged_profiles))
+        
         with st.expander(f"🔍 View {suspicious_count} Suspicious Profiles"):
             suspicious_df = data[data['is_suspicious']][['username', 'trust_score', 'suspicious_flags', 'followers', 'stars', 'so_reputation']]
             st.dataframe(suspicious_df, use_container_width=True)
+
+    # Skill Distribution Breakdown
+    st.subheader("📊 National Skill Distribution")
+    cluster_counts = pd.Series(clusters).value_counts().sort_index()
+    dist_df = pd.DataFrame({
+        'Skill Cluster': [archetypes[i] for i in cluster_counts.index],
+        'Population': cluster_counts.values,
+        'Percentage': (cluster_counts.values / len(clusters) * 100).round(2)
+    })
+    st.dataframe(dist_df, use_container_width=True, hide_index=True)
+
+    # Regional Rankings
+    st.subheader("🏆 Regional Rankings")
+    rank_col1, rank_col2 = st.columns(2)
     
-    # 2. Preprocess
-    with st.spinner("Preprocessing data..."):
-        # Filter suspicious profiles for clean training
-        clean_data = data[~data['is_suspicious']].copy()
-        if len(clean_data) < len(data):
-            st.info(f"🧹 Filtered {len(data) - len(clean_data)} suspicious profiles for model training")
-        
-        sg = SkillGenome(latent_dim=32, n_clusters=n_clusters)
-        X, features = sg.preprocess(clean_data)
-    st.success(f"✓ Prepared {len(features)} features from {len(clean_data)} clean profiles")
+    with rank_col1:
+        st.markdown("**Top 5 Regions by Population**")
+        pop_ranking = sorted([(r, int(v['population'])) for r, v in regional.items() if v['population'] > 0], 
+                            key=lambda x: x[1], reverse=True)[:5]
+        for idx, (region, pop) in enumerate(pop_ranking, 1):
+            st.write(f"{idx}. **{region}**: {pop:,} profiles")
     
-    # 3. Train model
-    with st.spinner(f"Training latent skill encoder for {epochs} epochs..."):
-        progress_bar = st.progress(0)
-        sg.train_model(X, epochs=epochs)
-        progress_bar.progress(100)
-    st.success("✓ Training complete")
+    with rank_col2:
+        st.markdown("**Top 5 Most Diverse Regions**")
+        div_ranking = sorted([(r, v['diversity']) for r, v in regional.items() if v['population'] > 0], 
+                            key=lambda x: x[1], reverse=True)[:5]
+        for idx, (region, div) in enumerate(div_ranking, 1):
+            st.write(f"{idx}. **{region}**: {div:.3f} diversity score")
+
+    # Skill Gap Severity Analysis
+    st.subheader("⚡ Skill Gap Severity Breakdown")
+    gap_shortage = [v for v in gaps.values() if v['status'] == 'shortage']
+    gap_surplus = [v for v in gaps.values() if v['status'] == 'surplus']
+    gap_balanced = [v for v in gaps.values() if v['status'] == 'balanced']
     
-    # 4. Get embeddings
-    with st.spinner("Generating skill embeddings..."):
-        embeddings = sg.get_embeddings(X)
-    st.success(f"✓ Generated {embeddings.shape[0]} x {embeddings.shape[1]} embeddings")
+    gap_col1, gap_col2, gap_col3 = st.columns(3)
+    with gap_col1:
+        st.metric("Critical Shortages", len([g for g in gap_shortage if abs(g['gap']) > 0.1]))
+        st.caption("Gap > 10%")
+    with gap_col2:
+        st.metric("Surplus Skills", len(gap_surplus))
+    with gap_col3:
+        st.metric("Balanced Skills", len(gap_balanced))
+
+    # Growth Trends Summary
+    st.subheader("📈 Skill Evolution Insights")
+    growth_rates = []
+    for i in range(len(current_dist)):
+        current = current_dist[i]
+        future = timeline[-1][i]  # 12 months ahead
+        growth = ((future - current) / current * 100) if current > 0 else 0
+        growth_rates.append((archetypes[i], growth))
     
-    # 5. Analyze
-    with st.spinner("Analyzing clusters and patterns..."):
-        clusters, archetypes = sg.cluster_skills()
-        regional = sg.regional_analysis(clean_data)
-        gaps = sg.detect_gaps()
-        embeddings_2d = sg.reduce_2d()
-        current_dist, timeline = sg.forecast_trends(months=12)
-    st.success("✓ Analysis complete")
+    growth_rates.sort(key=lambda x: x[1], reverse=True)
+    trend_col1, trend_col2 = st.columns(2)
     
+    with trend_col1:
+        st.markdown("**🚀 Fastest Growing Skills** (Next 12 months)")
+        for skill, rate in growth_rates[:3]:
+            st.write(f"• **{skill}**: +{rate:.1f}% projected growth")
+    
+    with trend_col2:
+        st.markdown("**📉 Declining Skills** (Next 12 months)")
+        for skill, rate in growth_rates[-3:]:
+            st.write(f"• **{skill}**: {rate:.1f}% projected change")
+
+    # Regional Focus Section
+    st.markdown("---")
+    st.subheader("🎯 Regional Deep Dive")
+    region_names = sorted(list(regional.keys()))
+    focus_region = st.selectbox("Focus Region", region_names)
+    region_info = regional[focus_region]
+    region_top = int(region_info['top_clusters'].argmax())
+    
+    rcol1, rcol2, rcol3 = st.columns(3)
+    with rcol1:
+        st.metric("Region Population", int(region_info['population']))
+    with rcol2:
+        st.metric("Region Diversity", f"{region_info['diversity']:.2f}")
+    with rcol3:
+        st.metric("Region Dominant Skill", archetypes[region_top])
+    
+    # Regional Skill Breakdown
+    if region_info['population'] > 0:
+        st.markdown(f"**Skill Composition in {focus_region}:**")
+        region_dist = region_info['top_clusters'] / region_info['population'] * 100
+        region_breakdown = pd.DataFrame({
+            'Skill': [archetypes[i] for i in range(len(region_dist))],
+            'Count': [int(c) for c in region_info['top_clusters']],
+            'Percentage': region_dist.round(2)
+        }).sort_values('Percentage', ascending=False)
+        st.dataframe(region_breakdown, use_container_width=True, hide_index=True)
+    
+    # Regional Comparison with National Average
+    st.markdown(f"**{focus_region} vs. National Average:**")
+    comp_data = []
+    for i in range(len(archetypes)):
+        national_pct = (cluster_counts[i] / len(clusters) * 100) if i in cluster_counts.index else 0
+        regional_pct = (region_info['top_clusters'][i] / region_info['population'] * 100) if region_info['population'] > 0 else 0
+        diff = regional_pct - national_pct
+        comp_data.append({
+            'Skill': archetypes[i],
+            'National %': f"{national_pct:.2f}%",
+            'Regional %': f"{regional_pct:.2f}%",
+            'Difference': f"{diff:+.2f}%"
+        })
+    comp_df = pd.DataFrame(comp_data)
+    st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
     st.markdown("---")
     
     # Display results in tabs
@@ -276,37 +474,17 @@ def main():
             ax.set_title('Regional Skill Distribution Heatmap', fontsize=12, fontweight='bold')
             ax.set_xlabel('Region')
             ax.set_ylabel('Skill Cluster')
-            
             plt.tight_layout()
             st.pyplot(fig)
 
-        st.markdown("---")
-        st.subheader("Structural Risk Zones")
-        risk_rows = build_risk_zones(regional, sg.n_clusters)
-        if risk_rows:
-            risk_df = pd.DataFrame(risk_rows)
-            st.dataframe(risk_df, use_container_width=True)
-            for row in risk_rows:
-                label = f"{row['region']}: {row['risk_level']} risk"
-                detail = f"Risk score {row['risk_score']:.2f}, deficits {row['deficit_clusters']} clusters"
-                if row['risk_level'] == "High":
-                    st.error(f"{label} - {detail}")
-                elif row['risk_level'] == "Medium":
-                    st.warning(f"{label} - {detail}")
-                elif row['risk_level'] == "Low":
-                    st.info(f"{label} - {detail}")
-                else:
-                    st.success(f"{label} - {detail}")
-        else:
-            st.info("No risk zones detected for the current selection.")
-    
+        
     # Tab 3: Skill Gaps
     with tab3:
         st.header("Skill Gap Analysis")
         st.markdown("Comparing current distribution vs required distribution")
-        
+
         col1, col2 = st.columns([1, 2])
-        
+
         with col1:
             st.subheader("Gap Summary")
             for cid, gap_info in gaps.items():
@@ -317,16 +495,16 @@ def main():
                     st.warning(f"🟡 **{archetypes[cid]}**: SURPLUS ({gap_info['gap']*100:+.1f}%)")
                 else:
                     st.success(f"🟢 **{archetypes[cid]}**: BALANCED")
-        
+
         with col2:
             fig, ax = plt.subplots(figsize=(10, 6))
-            
+
             gap_values = [float(gaps[i]['gap']) for i in range(sg.n_clusters)]
             gap_values = np.nan_to_num(gap_values, nan=0.0, posinf=0.0, neginf=0.0)
             labels = [archetypes[i] for i in range(sg.n_clusters)]
             colors_gap = ['red' if g < -0.05 else 'green' if g > 0.05 else 'gray' for g in gap_values]
             y_pos = np.arange(len(labels))
-            
+
             ax.barh(y_pos, gap_values, color=colors_gap, alpha=0.7, edgecolor='black')
             ax.scatter(gap_values, y_pos, color='black', s=15, zorder=3)
             ax.set_yticks(y_pos)
@@ -338,7 +516,7 @@ def main():
             ax.set_title('Skill Gap Analysis', fontsize=12, fontweight='bold')
             ax.legend()
             ax.grid(axis='x', alpha=0.3)
-            
+
             plt.tight_layout()
             st.pyplot(fig)
 
